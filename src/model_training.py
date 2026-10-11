@@ -1,19 +1,25 @@
 # Standard library imports
 import logging
+from copy import deepcopy
 from typing import Any, Dict, Tuple
 
 # Related third-party imports
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import Lasso, LinearRegression, Ridge
 from sklearn.metrics import (
     mean_absolute_error,
+    mean_absolute_percentage_error,
     mean_squared_error,
     r2_score,
     root_mean_squared_error,
 )
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.preprocessing import StandardScaler
 
 
 class ModelTraining:
@@ -60,10 +66,10 @@ class ModelTraining:
         X = df.drop(columns=self.config["target_column"])
         y = df[self.config["target_column"]]
         X_train, X_temp, y_train, y_temp = train_test_split(
-            X, y, test_size=self.config["val_test_size"], random_state=42
+            X, y, test_size=self.config["val_test_size"], random_state=self.config["random_state"]
         )
         X_val, X_test, y_val, y_test = train_test_split(
-            X_temp, y_temp, test_size=self.config["val_size"], random_state=42
+            X_temp, y_temp, test_size=self.config["val_size"], random_state=self.config["random_state"]
         )
         logging.info("Data split into train, validation, test sets.")
         return X_train, X_val, X_test, y_train, y_val, y_test
@@ -91,9 +97,15 @@ class ModelTraining:
         """
         logging.info("Training and evaluating baseline models.")
         models = {
+            "dummy_median": DummyRegressor(strategy="median"),
             "linear_regression": LinearRegression(),
             "ridge": Ridge(),
-            "lasso": Lasso(),
+            "lasso": TransformedTargetRegressor(
+                regressor=Lasso(max_iter=50000, tol=1e-4),
+                transformer=StandardScaler(),
+            ),
+            "random_forest": RandomForestRegressor(n_estimators=self.config.get("random_forest_estimators", 100), random_state=self.config["random_state"], n_jobs=self.config.get("n_jobs", 1), max_depth=20),
+            "gradient_boosting": GradientBoostingRegressor(random_state=self.config["random_state"]),
         }
         pipelines = {}
         metrics = {}
@@ -109,6 +121,13 @@ class ModelTraining:
             )
 
         return pipelines, metrics
+
+    @staticmethod
+    def refit_model(model, X_train, y_train, X_val, y_val) -> Pipeline:
+        """Refit a copy of the winner on combined train and validation data."""
+        final_model = deepcopy(model)
+        final_model.fit(pd.concat([X_train, X_val]), pd.concat([y_train, y_val]))
+        return final_model
 
     def train_and_evaluate_tuned_models(
         self,
@@ -138,14 +157,27 @@ class ModelTraining:
         cv = self.config["cv"]
         scoring = self.config["scoring"]
 
-        models = {"ridge_tuned": Ridge(), "lasso_tuned": Lasso()}
+        models = {
+            "ridge_tuned": Ridge(),
+            "lasso_tuned": TransformedTargetRegressor(
+                regressor=Lasso(max_iter=50000, tol=1e-4),
+                transformer=StandardScaler(),
+            ),
+        }
 
         for model_name, model in models.items():
             pipeline = Pipeline(
                 steps=[("preprocessor", self.preprocessor), ("regressor", model)]
             )
+            model_param_grid = param_grid
+            if model_name == "lasso_tuned":
+                model_param_grid = self.config["lasso_param_grid"]
             grid_search = GridSearchCV(
-                pipeline, param_grid, cv=cv, scoring=scoring, n_jobs=-1
+                pipeline,
+                model_param_grid,
+                cv=cv,
+                scoring=scoring,
+                n_jobs=self.config.get("n_jobs", 1),
             )
             grid_search.fit(X_train, y_train)
             tuned_models[model_name] = grid_search.best_estimator_
@@ -178,12 +210,19 @@ class ModelTraining:
             "MAE": mean_absolute_error(y_test, y_test_pred),
             "MSE": mean_squared_error(y_test, y_test_pred),
             "RMSE": root_mean_squared_error(y_test, y_test_pred),
+            "MAPE": mean_absolute_percentage_error(y_test, y_test_pred),
             "R²": r2_score(y_test, y_test_pred),
         }
         logging.info(f"Final Test Metrics for {model_name}:")
         for metric_name, metric_value in metrics.items():
             logging.info(f"{metric_name}: {metric_value}")
         return metrics
+
+    @staticmethod
+    def make_predictions(model: Pipeline, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
+        """Create an auditable prediction and residual table."""
+        predicted = model.predict(X)
+        return pd.DataFrame({"actual": y.to_numpy(), "predicted": predicted, "residual": y.to_numpy() - predicted})
 
     def _evaluate_model(
         self, model: Pipeline, X_val: pd.DataFrame, y_val: pd.Series, model_name: str
@@ -207,6 +246,7 @@ class ModelTraining:
             "MAE": mean_absolute_error(y_val, y_val_pred),
             "MSE": mean_squared_error(y_val, y_val_pred),
             "RMSE": root_mean_squared_error(y_val, y_val_pred),
+            "MAPE": mean_absolute_percentage_error(y_val, y_val_pred),
             "R²": r2_score(y_val, y_val_pred),
         }
         logging.info(f"{model_name} Validation Metrics:")

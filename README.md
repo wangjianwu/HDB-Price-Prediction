@@ -138,3 +138,20 @@ The main project settings are stored in `src/config.yaml`. Update this file when
 
 - Run `main.py` from the project root so that `./src/config.yaml` and `./data/data.csv` resolve correctly.
 - Keep `src/__init__.py` in the `src` folder. It may remain empty for this project.
+
+## Improved Pipeline Outputs
+
+The revised workflow validates configuration and source columns, writes a data-quality
+report, compares a dummy benchmark and nonlinear ensemble models with the linear
+models, selects by validation RMSE, and refits the winner on combined training and
+validation data.
+
+Run a custom configuration with `python main.py --config src/config.yaml`.
+
+Generated artifacts are written to outputs/data_quality_report.json,
+outputs/metrics.json, outputs/test_predictions.csv, and
+models/hdb_resale_price_pipeline.joblib.
+
+The engineered age_of_flat feature is calculated at transaction time. For EDA,
+price_per_sqm is useful, but it is deliberately excluded from model inputs because it
+contains the prediction target and would leak information.

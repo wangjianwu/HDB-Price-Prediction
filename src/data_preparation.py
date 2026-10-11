@@ -46,8 +46,9 @@ class DataPreparation:
         pd.DataFrame: The cleaned DataFrame.
         """
         logging.info("Starting data cleaning.")
-        df.drop_duplicates(inplace=True)
-        df["flat_type"].replace("FOUR ROOM", "4 ROOM", inplace=True)
+        self.validate_columns(df)
+        df = df.copy().drop_duplicates()
+        df["flat_type"] = df["flat_type"].replace("FOUR ROOM", "4 ROOM")
         df["lease_commence_date"] = df["lease_commence_date"].abs()
         df["storey_range"] = df["storey_range"].apply(self._convert_storey_range)
         df = self._fill_missing_names(df, "town_id", "town_name")
@@ -56,6 +57,7 @@ class DataPreparation:
         df["year_month"] = pd.to_datetime(df["month"], format="%Y-%m")
         df["year"] = df["year_month"].dt.year
         df["month"] = df["year_month"].dt.month
+        df["age_of_flat"] = df["year"] - df["lease_commence_date"]
         df.drop(columns=["year_month"], inplace=True)
         df["remaining_lease_months"] = df["remaining_lease"].apply(
             self._extract_lease_info
@@ -63,6 +65,13 @@ class DataPreparation:
         df.drop(columns=["remaining_lease", "block", "street_name"], inplace=True)
         logging.info("Data cleaning completed.")
         return df
+
+    def validate_columns(self, df: pd.DataFrame) -> None:
+        """Raise a clear error when required source columns are absent."""
+        required = {"id", "month", "town_id", "town_name", "flat_type", "block", "street_name", "storey_range", "floor_area_sqm", "flatm_id", "flatm_name", "lease_commence_date", "remaining_lease", self.config["target_column"]}
+        missing = sorted(required.difference(df.columns))
+        if missing:
+            raise ValueError(f"Dataset is missing required columns: {missing}")
 
     def _create_preprocessor(self) -> ColumnTransformer:
         """
@@ -96,7 +105,7 @@ class DataPreparation:
                 ("pass", "passthrough", self.config["passthrough_features"]),
             ],
             remainder="passthrough",
-            n_jobs=-1,
+            n_jobs=self.config.get("n_jobs", 1),
         )
         return preprocessor
 
